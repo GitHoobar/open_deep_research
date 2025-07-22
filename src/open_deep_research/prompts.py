@@ -56,24 +56,75 @@ You will extract and return:
 1. The GitHub repository URL to analyze
 2. A detailed design brief describing what design document should be created
 
-Guidelines:
+<Query Expansion Guidelines>
+If the user's query is simple or brief (e.g., "Add authentication", "Design a pricing model"), you should automatically expand it into a comprehensive design brief by:
+
+1. Including Standard Requirements
+   - Add industry-standard requirements for the requested feature
+   - Include best practices and common implementation patterns
+   - Consider security, scalability, and maintainability aspects
+
+2. Adding Technical Dimensions
+   - Database/storage requirements
+   - API endpoints and interfaces
+   - Authentication/authorization if relevant
+   - Integration points with existing systems
+   - Monitoring and logging considerations
+
+3. Considering Business Logic
+   - User workflows and interactions
+   - Edge cases and error handling
+   - Business rules and validation
+   - Admin/management capabilities
+
+4. Infrastructure & Deployment
+   - Scalability requirements
+   - Performance considerations
+   - Deployment and migration strategy
+   - Monitoring and observability
+
+Example Expansions:
+- Simple: "Add user authentication"
+  Expanded: "Design a comprehensive authentication system including:
+    - User registration and login flows
+    - Password hashing and security measures
+    - Session management and JWT implementation
+    - OAuth integration for social logins
+    - Role-based access control
+    - Password reset and account recovery
+    - Security logging and monitoring
+    - Rate limiting and brute force protection"
+
+- Simple: "Create a pricing model"
+  Expanded: "Design a usage-based pricing system with:
+    - Credit system for usage tracking
+    - Multiple subscription tiers
+    - Usage metering and analytics
+    - Billing integration with payment providers
+    - Invoice generation
+    - Usage limits and throttling
+    - Admin dashboard for management
+    - Automated notifications"
+</Query Expansion Guidelines>
+
+<General Guidelines>
 1. Maximize Specificity and Detail
-- Include all known user preferences and explicitly list key aspects to analyze.
-- It is important that all details from the user are included in the instructions.
+- Include all known user preferences and explicitly list key aspects to analyze
+- It is important that all details from the user are included in the instructions
 
 2. Fill in Unstated But Necessary Dimensions as Open-Ended
-- If certain aspects are essential for a meaningful design doc but the user has not provided them, explicitly state that they are open-ended or default to comprehensive analysis.
+- If certain aspects are essential for a meaningful design doc but the user has not provided them, explicitly state that they are open-ended or default to comprehensive analysis
 
 3. Avoid Unwarranted Assumptions
-- If the user has not provided a particular detail, do not invent one.
-- Instead, state the lack of specification and guide the analyzer to treat it as flexible or accept all possible approaches.
+- If the user has not provided a particular detail, do not invent one
+- Instead, state the lack of specification and guide the analyzer to treat it as flexible or accept all possible approaches
 
 4. Use the First Person
-- Phrase the request from the perspective of the user.
+- Phrase the request from the perspective of the user
 
 5. Focus Areas
-- For design documents, consider: architecture patterns, implementation approaches, technical requirements, integration points, scalability concerns, security considerations, and migration strategies.
-- If the user is asking for a specific type of design (e.g., API design, database schema, authentication system), focus the analysis on those areas.
+- For design documents, consider: architecture patterns, implementation approaches, technical requirements, integration points, scalability concerns, security considerations, and migration strategies
+- If the user is asking for a specific type of design (e.g., API design, database schema, authentication system), focus the analysis on those areas
 
 The output should be a structured query that clearly identifies:
 - The repository URL

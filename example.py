@@ -44,76 +44,14 @@ async def generate_pricing_model_design():
         return
 
     # Detailed query for pricing model design
-    pricing_query = """
-    I need to build a comprehensive usage-based pricing model for a code review and documentation generation platform. Please analyze the current backend architecture and provide a detailed design document that covers:
-
-    ## Core Requirements:
-    1. **Credits System Architecture**
-       - Users receive initial credits upon signup/subscription
-       - Credits are consumed based on usage (code review, doc generation)
-       - Credit balance tracking and management
-       - Credit expiration and renewal policies
-
-    2. **Usage Tracking & Metering**
-       - Track code review API calls and complexity
-       - Monitor documentation generation requests and output length
-       - Real-time usage monitoring and analytics
-       - Rate limiting based on credit availability
-
-    3. **Pricing Tiers & Models**
-       - Free tier with limited credits
-       - Multiple paid tiers with different credit allocations
-       - Pay-as-you-go option for additional credits
-       - Enterprise/team pricing models
-
-    4. **Billing & Payment Integration**
-       - Subscription management (monthly/yearly)
-       - Credit top-up purchasing
-       - Payment processing integration (Stripe/PayPal)
-       - Invoice generation and billing history
-
-    5. **Credit Consumption Logic**
-       - Define credit costs for different operations:
-         * Simple code review: X credits
-         * Complex code review: Y credits  
-         * Documentation generation: Z credits per page/word
-       - Dynamic pricing based on complexity/size
-       - Bulk operation discounts
-
-    6. **User Experience & Notifications**
-       - Credit balance dashboard
-       - Usage analytics and reporting
-       - Low credit warnings and notifications
-       - Upgrade prompts and recommendations
-
-    7. **Admin & Analytics**
-       - Revenue tracking and reporting
-       - User behavior analytics
-       - Credit usage patterns
-       - Pricing optimization insights
-
-    ## Technical Implementation:
-    - Database schema for credits, subscriptions, usage tracking
-    - API endpoints for credit management
-    - Background jobs for billing and notifications
-    - Integration with existing authentication system
-    - Scalable architecture for high-volume usage tracking
-
-    ## Business Considerations:
-    - Competitive pricing analysis
-    - Customer acquisition and retention strategies
-    - Revenue optimization and forecasting
-    - Compliance with payment regulations
-
-    Please analyze the current backend codebase and provide a comprehensive design that integrates seamlessly with the existing architecture while implementing this usage-based pricing model with credits.
-    """
+    pricing_query = """Design a usage-based pricing model for our code review and doc generation platform."""
 
     # Configuration for comprehensive analysis
     config = {
         "configurable": {
             "allow_clarification": False,
             "max_concurrent_analysis_units": 8,  # Enhanced parallel analysis
-            "max_analysis_iterations": 15,  # Deep analysis for complex pricing system
+            "max_analysis_iterations": 10,  # Deep analysis for complex pricing system
             "github_repo_url": "https://github.com/Entelligence-AI/backend",
             "github_access_token": github_token,
             "model": "gpt-4o",  # Best model for complex business logic
