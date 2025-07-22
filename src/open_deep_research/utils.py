@@ -1,334 +1,699 @@
 import os
-import aiohttp
 import asyncio
 import logging
-import warnings
-from datetime import datetime, timedelta, timezone
+import requests
+import base64
+import json
+from datetime import datetime
 from typing import Annotated, List, Literal, Dict, Optional, Any
 from langchain_core.tools import BaseTool, StructuredTool, tool, ToolException, InjectedToolArg
 from langchain_core.messages import HumanMessage, AIMessage, MessageLikeRepresentation, filter_messages
 from langchain_core.runnables import RunnableConfig
 from langchain_core.language_models import BaseChatModel
 from langchain.chat_models import init_chat_model
-from tavily import AsyncTavilyClient
-from langgraph.config import get_store
-from mcp import McpError
-from langchain_mcp_adapters.client import MultiServerMCPClient
-from open_deep_research.state import Summary, ResearchComplete
-from open_deep_research.configuration import SearchAPI, Configuration
-from open_deep_research.prompts import summarize_webpage_prompt
+
+
+from langchain_community.utilities.github import GitHubAPIWrapper
+from langchain_community.agent_toolkits.github.toolkit import GitHubToolkit
+from open_deep_research.state import Summary, AnalysisComplete
+from open_deep_research.configuration import Configuration
 
 
 ##########################
-# Tavily Search Tool Utils
+# GitHub Repository Analysis Utils
 ##########################
-TAVILY_SEARCH_DESCRIPTION = (
-    "A search engine optimized for comprehensive, accurate, and trusted results. "
-    "Useful for when you need to answer questions about current events."
+GITHUB_ANALYSIS_DESCRIPTION = (
+    "A comprehensive toolkit for analyzing GitHub repositories. "
+    "Useful for understanding codebase structure, reading files, and analyzing repository content."
 )
-@tool(description=TAVILY_SEARCH_DESCRIPTION)
-async def tavily_search(
-    queries: List[str],
-    max_results: Annotated[int, InjectedToolArg] = 5,
-    topic: Annotated[Literal["general", "news", "finance"], InjectedToolArg] = "general",
-    config: RunnableConfig = None
-) -> str:
-    """
-    Fetches results from Tavily search API.
 
-    Args
-        queries (List[str]): List of search queries, you can pass in as many queries as you need.
-        max_results (int): Maximum number of results to return
-        topic (Literal['general', 'news', 'finance']): Topic to filter results by
-
-    Returns:
-        str: A formatted string of search results
-    """
-    search_results = await tavily_search_async(
-        queries,
-        max_results=max_results,
-        topic=topic,
-        include_raw_content=True,
-        config=config
-    )
-    # Format the search results and deduplicate results by URL
-    formatted_output = f"Search results: \n\n"
-    unique_results = {}
-    for response in search_results:
-        for result in response['results']:
-            url = result['url']
-            if url not in unique_results:
-                unique_results[url] = {**result, "query": response['query']}
-    configurable = Configuration.from_runnable_config(config)
-    max_char_to_include = 50_000   # NOTE: This can be tuned by the developer. This character count keeps us safely under input token limits for the latest models.
-    model_api_key = get_api_key_for_model(configurable.summarization_model, config)
-    summarization_model = init_chat_model(
-        model=configurable.summarization_model,
-        max_tokens=configurable.summarization_model_max_tokens,
-        api_key=model_api_key,
-        tags=["langsmith:nostream"]
-    ).with_structured_output(Summary).with_retry(stop_after_attempt=configurable.max_structured_output_retries)
-    async def noop():
-        return None
-    summarization_tasks = [
-        noop() if not result.get("raw_content") else summarize_webpage(
-            summarization_model, 
-            result['raw_content'][:max_char_to_include],
-        )
-        for result in unique_results.values()
-    ]
-    summaries = await asyncio.gather(*summarization_tasks)
-    summarized_results = {
-        url: {'title': result['title'], 'content': result['content'] if summary is None else summary}
-        for url, result, summary in zip(unique_results.keys(), unique_results.values(), summaries)
-    }
-    for i, (url, result) in enumerate(summarized_results.items()):
-        formatted_output += f"\n\n--- SOURCE {i+1}: {result['title']} ---\n"
-        formatted_output += f"URL: {url}\n\n"
-        formatted_output += f"SUMMARY:\n{result['content']}\n\n"
-        formatted_output += "\n\n" + "-" * 80 + "\n"
-    if summarized_results:
-        return formatted_output
-    else:
-        return "No valid search results found. Please try different search queries or use a different search API."
-
-
-async def tavily_search_async(search_queries, max_results: int = 5, topic: Literal["general", "news", "finance"] = "general", include_raw_content: bool = True, config: RunnableConfig = None):
-    tavily_async_client = AsyncTavilyClient(api_key=get_tavily_api_key(config))
-    search_tasks = []
-    for query in search_queries:
-            search_tasks.append(
-                tavily_async_client.search(
-                    query,
-                    max_results=max_results,
-                    include_raw_content=include_raw_content,
-                    topic=topic
-                )
-            )
-    search_docs = await asyncio.gather(*search_tasks)
-    return search_docs
-
-async def summarize_webpage(model: BaseChatModel, webpage_content: str) -> str:
+async def comprehensive_repo_analysis(repo_url: str, github_token: str, github_repository: str) -> str:
+    """Perform comprehensive repository analysis to understand architecture and technology stack."""
     try:
+        headers = {"Authorization": f"token {github_token}", "Accept": "application/vnd.github.v3+json"}
+        
+        # Get repository information
+        repo_response = requests.get(f"https://api.github.com/repos/{github_repository}", headers=headers)
+        if repo_response.status_code != 200:
+            return f"Error accessing repository: {repo_response.status_code}"
+        
+        repo_info = repo_response.json()
+        
+        # Get repository contents (root level)
+        contents_response = requests.get(f"https://api.github.com/repos/{github_repository}/contents", headers=headers)
+        if contents_response.status_code != 200:
+            return f"Error accessing repository contents: {contents_response.status_code}"
+        
+        contents = contents_response.json()
+        
+        # Analyze file structure
+        analysis = f"# Repository Analysis: {github_repository}\n\n"
+        analysis += f"**Description**: {repo_info.get('description', 'No description')}\n"
+        analysis += f"**Language**: {repo_info.get('language', 'Not specified')}\n"
+        analysis += f"**Size**: {repo_info.get('size', 0)} KB\n\n"
+        
+        # Categorize files by type
+        config_files = []
+        source_files = []
+        documentation = []
+        notebooks = []
+        directories = []
+        
+        for item in contents:
+            name = item['name']
+            if item['type'] == 'dir':
+                directories.append(name)
+            elif name.endswith(('.py', '.js', '.ts', '.java', '.cpp', '.c', '.go', '.rs', '.rb')):
+                source_files.append(name)
+            elif name.endswith(('.ipynb',)):
+                notebooks.append(name)
+            elif name.endswith(('.md', '.txt', '.rst', '.doc')):
+                documentation.append(name)
+            elif name in ['requirements.txt', 'package.json', 'pyproject.toml', 'setup.py', 'Dockerfile', '.gitignore', 'Makefile']:
+                config_files.append(name)
+        
+        analysis += "## Project Structure:\n"
+        if directories:
+            analysis += f"**Directories**: {', '.join(directories)}\n"
+        if source_files:
+            analysis += f"**Source Files**: {', '.join(source_files)}\n"
+        if notebooks:
+            analysis += f"**Jupyter Notebooks**: {', '.join(notebooks)}\n"
+        if config_files:
+            analysis += f"**Configuration Files**: {', '.join(config_files)}\n"
+        if documentation:
+            analysis += f"**Documentation**: {', '.join(documentation)}\n"
+        
+        # Detect technology stack
+        tech_indicators = []
+        if any(f.endswith('.py') for f in source_files) or 'requirements.txt' in config_files or 'pyproject.toml' in config_files:
+            tech_indicators.append("Python")
+        if notebooks:
+            tech_indicators.append("Jupyter Notebooks")
+        if 'package.json' in config_files:
+            tech_indicators.append("Node.js/JavaScript")
+        if 'Dockerfile' in config_files:
+            tech_indicators.append("Docker")
+        
+        if tech_indicators:
+            analysis += f"\n**Detected Technologies**: {', '.join(tech_indicators)}\n"
+        
+        return analysis
+        
+    except Exception as e:
+        return f"Error during repository analysis: {str(e)}"
+
+async def smart_file_reader(github_token: str, github_repository: str, file_path: str) -> str:
+    """Read a file with intelligent context and analysis."""
+    try:
+        headers = {"Authorization": f"token {github_token}", "Accept": "application/vnd.github.v3+json"}
+        
+        # Get file content
+        file_response = requests.get(f"https://api.github.com/repos/{github_repository}/contents/{file_path}", headers=headers)
+        if file_response.status_code != 200:
+            return f"Error reading file {file_path}: {file_response.status_code}"
+        
+        file_data = file_response.json()
+        
+        if file_data.get('type') != 'file':
+            return f"{file_path} is not a file"
+        
+        # Decode file content
+        content = base64.b64decode(file_data['content']).decode('utf-8')
+        
+        # Provide context based on file type
+        file_ext = file_path.split('.')[-1].lower() if '.' in file_path else ''
+        analysis = f"# File Analysis: {file_path}\n\n"
+        
+        if file_ext == 'py':
+            analysis += "**Type**: Python source file\n"
+            # Analyze Python imports and structure
+            lines = content.split('\n')
+            imports = [line.strip() for line in lines if line.strip().startswith(('import ', 'from '))]
+            classes = [line.strip() for line in lines if line.strip().startswith('class ')]
+            functions = [line.strip() for line in lines if line.strip().startswith('def ')]
+            
+            if imports:
+                analysis += f"**Imports** ({len(imports)}): {', '.join(imports[:5])}{'...' if len(imports) > 5 else ''}\n"
+            if classes:
+                analysis += f"**Classes** ({len(classes)}): {', '.join([c.split('(')[0].replace('class ', '') for c in classes[:3]])}{'...' if len(classes) > 3 else ''}\n"
+            if functions:
+                analysis += f"**Functions** ({len(functions)}): {', '.join([f.split('(')[0].replace('def ', '') for f in functions[:5]])}{'...' if len(functions) > 5 else ''}\n"
+        
+        elif file_ext == 'ipynb':
+            analysis += "**Type**: Jupyter Notebook\n"
+            try:
+                notebook = json.loads(content)
+                cells = notebook.get('cells', [])
+                code_cells = [c for c in cells if c.get('cell_type') == 'code']
+                markdown_cells = [c for c in cells if c.get('cell_type') == 'markdown']
+                analysis += f"**Total Cells**: {len(cells)} (Code: {len(code_cells)}, Markdown: {len(markdown_cells)})\n"
+            except:
+                analysis += "**Note**: Could not parse notebook structure\n"
+        
+        elif file_path.lower() in ['readme.md', 'readme.txt', 'readme.rst']:
+            analysis += "**Type**: Project README/Documentation\n"
+        
+        elif file_path in ['requirements.txt', 'pyproject.toml', 'setup.py']:
+            analysis += "**Type**: Python dependency/configuration file\n"
+        
+        analysis += f"\n**File Size**: {len(content)} characters\n"
+        analysis += f"\n## File Content:\n```{file_ext}\n{content}\n```"
+        
+        return analysis
+        
+    except Exception as e:
+        return f"Error reading file {file_path}: {str(e)}"
+
+async def intelligent_code_search(github_token: str, github_repository: str, query: str, file_extension: str = "") -> str:
+    """Search for code patterns with intelligent context."""
+    try:
+        headers = {"Authorization": f"token {github_token}", "Accept": "application/vnd.github.v3+json"}
+        
+        # Build search query
+        search_query = f"{query} repo:{github_repository}"
+        if file_extension:
+            search_query += f" extension:{file_extension}"
+        
+        # Use GitHub search API
+        search_response = requests.get(
+            f"https://api.github.com/search/code?q={requests.utils.quote(search_query)}&per_page=10",
+            headers=headers
+        )
+        
+        if search_response.status_code != 200:
+            return f"Error searching code: {search_response.status_code}"
+        
+        search_results = search_response.json()
+        
+        if search_results['total_count'] == 0:
+            return f"No code found matching '{query}'"
+        
+        analysis = f"# Code Search Results for '{query}'\n\n"
+        analysis += f"**Total matches**: {search_results['total_count']}\n\n"
+        
+        for i, item in enumerate(search_results['items'][:5], 1):
+            analysis += f"## Result {i}: {item['name']}\n"
+            analysis += f"**Path**: {item['path']}\n"
+            analysis += f"**Repository**: {item['repository']['full_name']}\n"
+            if 'text_matches' in item:
+                for match in item['text_matches'][:2]:
+                    analysis += f"**Match**: ...{match.get('fragment', 'N/A')}...\n"
+            analysis += "\n"
+        
+        return analysis
+        
+    except Exception as e:
+        return f"Error during code search: {str(e)}"
+
+async def detect_tech_stack(github_token: str, github_repository: str) -> str:
+    """Detect and analyze the technology stack used in the repository."""
+    try:
+        headers = {"Authorization": f"token {github_token}", "Accept": "application/vnd.github.v3+json"}
+        
+        # Get languages used in the repository
+        languages_response = requests.get(f"https://api.github.com/repos/{github_repository}/languages", headers=headers)
+        if languages_response.status_code == 200:
+            languages = languages_response.json()
+        else:
+            languages = {}
+        
+        analysis = f"# Technology Stack Analysis: {github_repository}\n\n"
+        
+        if languages:
+            total_bytes = sum(languages.values())
+            analysis += "## Programming Languages:\n"
+            for lang, bytes_count in sorted(languages.items(), key=lambda x: x[1], reverse=True):
+                percentage = (bytes_count / total_bytes) * 100
+                analysis += f"- **{lang}**: {percentage:.1f}% ({bytes_count:,} bytes)\n"
+        
+        # Check for specific framework/library indicators
+        config_files_to_check = [
+            ('requirements.txt', 'Python dependencies'),
+            ('pyproject.toml', 'Python project configuration'),
+            ('setup.py', 'Python package setup'),
+            ('package.json', 'Node.js dependencies'),
+            ('Dockerfile', 'Docker containerization'),
+            ('docker-compose.yml', 'Docker Compose'),
+            ('.github/workflows', 'GitHub Actions CI/CD'),
+            ('Makefile', 'Build automation'),
+            ('environment.yml', 'Conda environment'),
+            ('pipfile', 'Pipenv dependencies')
+        ]
+        
+        analysis += "\n## Detected Configuration Files:\n"
+        for file_path, description in config_files_to_check:
+            file_response = requests.get(f"https://api.github.com/repos/{github_repository}/contents/{file_path}", headers=headers)
+            if file_response.status_code == 200:
+                analysis += f"- **{file_path}**: {description}\n"
+        
+        return analysis
+        
+    except Exception as e:
+        return f"Error detecting technology stack: {str(e)}"
+
+async def analyze_config_files(github_token: str, github_repository: str) -> str:
+    """Analyze project configuration files to understand dependencies and setup."""
+    try:
+        headers = {"Authorization": f"token {github_token}", "Accept": "application/vnd.github.v3+json"}
+        
+        analysis = f"# Configuration Files Analysis: {github_repository}\n\n"
+        
+        # Check key configuration files
+        config_files = [
+            'requirements.txt',
+            'pyproject.toml', 
+            'setup.py',
+            'environment.yml',
+            'package.json',
+            'Dockerfile'
+        ]
+        
+        for config_file in config_files:
+            file_response = requests.get(f"https://api.github.com/repos/{github_repository}/contents/{config_file}", headers=headers)
+            if file_response.status_code == 200:
+                file_data = file_response.json()
+                content = base64.b64decode(file_data['content']).decode('utf-8')
+                
+                analysis += f"## {config_file}\n"
+                
+                if config_file == 'requirements.txt':
+                    deps = [line.strip() for line in content.split('\n') if line.strip() and not line.startswith('#')]
+                    analysis += f"**Python Dependencies** ({len(deps)}): {', '.join(deps[:10])}{'...' if len(deps) > 10 else ''}\n\n"
+                
+                elif config_file == 'pyproject.toml':
+                    analysis += "**Python Project Configuration**\n"
+                    analysis += f"```toml\n{content[:500]}{'...' if len(content) > 500 else ''}\n```\n\n"
+                
+                elif config_file == 'package.json':
+                    try:
+                        package_data = json.loads(content)
+                        analysis += f"**Project Name**: {package_data.get('name', 'N/A')}\n"
+                        analysis += f"**Version**: {package_data.get('version', 'N/A')}\n"
+                        if 'dependencies' in package_data:
+                            deps = list(package_data['dependencies'].keys())
+                            analysis += f"**Dependencies**: {', '.join(deps[:10])}{'...' if len(deps) > 10 else ''}\n"
+                    except:
+                        analysis += "**Note**: Could not parse package.json\n"
+                    analysis += "\n"
+                
+                else:
+                    analysis += f"```\n{content[:300]}{'...' if len(content) > 300 else ''}\n```\n\n"
+        
+        return analysis
+        
+    except Exception as e:
+        return f"Error analyzing configuration files: {str(e)}"
+
+async def explore_directory_structure(github_token: str, github_repository: str, directory_path: str = "") -> str:
+    """Explore a specific directory to understand its organization."""
+    try:
+        headers = {"Authorization": f"token {github_token}", "Accept": "application/vnd.github.v3+json"}
+        
+        # Get directory contents
+        url = f"https://api.github.com/repos/{github_repository}/contents"
+        if directory_path:
+            url += f"/{directory_path.rstrip('/')}"
+        
+        dir_response = requests.get(url, headers=headers)
+        if dir_response.status_code != 200:
+            return f"Error accessing directory {directory_path or 'root'}: {dir_response.status_code}"
+        
+        contents = dir_response.json()
+        
+        analysis = f"# Directory Structure: {directory_path or 'Root Directory'}\n\n"
+        
+        # Categorize contents
+        directories = []
+        python_files = []
+        notebooks = []
+        config_files = []
+        other_files = []
+        
+        for item in contents:
+            name = item['name']
+            if item['type'] == 'dir':
+                directories.append(name)
+            elif name.endswith('.py'):
+                python_files.append(name)
+            elif name.endswith('.ipynb'):
+                notebooks.append(name)
+            elif name in ['requirements.txt', 'setup.py', 'pyproject.toml', '.gitignore', 'Dockerfile', 'README.md']:
+                config_files.append(name)
+            else:
+                other_files.append(name)
+        
+        if directories:
+            analysis += f"**Subdirectories** ({len(directories)}): {', '.join(directories)}\n"
+        if python_files:
+            analysis += f"**Python Files** ({len(python_files)}): {', '.join(python_files)}\n"
+        if notebooks:
+            analysis += f"**Jupyter Notebooks** ({len(notebooks)}): {', '.join(notebooks)}\n"
+        if config_files:
+            analysis += f"**Configuration Files** ({len(config_files)}): {', '.join(config_files)}\n"
+        if other_files:
+            analysis += f"**Other Files** ({len(other_files)}): {', '.join(other_files[:10])}{'...' if len(other_files) > 10 else ''}\n"
+        
+        return analysis
+        
+    except Exception as e:
+        return f"Error exploring directory: {str(e)}"
+
+async def analyze_dependencies_and_imports(github_token: str, github_repository: str) -> str:
+    """Analyze dependencies, imports, and module relationships in the codebase."""
+    try:
+        headers = {"Authorization": f"token {github_token}", "Accept": "application/vnd.github.v3+json"}
+        
+        analysis = f"# Dependency Graph Analysis: {github_repository}\n\n"
+        
+        # Search for Python import patterns
+        import_patterns = [
+            "from django",
+            "import django", 
+            "from rest_framework",
+            "import stripe",
+            "from .models import",
+            "from .views import",
+            "from billing",
+            "from user"
+        ]
+        
+        dependency_map = {}
+        
+        for pattern in import_patterns:
+            search_response = requests.get(
+                f"https://api.github.com/search/code?q={requests.utils.quote(f'{pattern} repo:{github_repository}')}&per_page=10",
+                headers=headers
+            )
+            
+            if search_response.status_code == 200:
+                results = search_response.json()
+                if results['total_count'] > 0:
+                    analysis += f"## {pattern} Dependencies\n"
+                    for item in results['items'][:3]:
+                        file_path = item['path']
+                        if file_path not in dependency_map:
+                            dependency_map[file_path] = []
+                        dependency_map[file_path].append(pattern)
+                        analysis += f"- **{file_path}**: Uses {pattern}\n"
+                    analysis += "\n"
+        
+        # Analyze key architectural patterns
+        analysis += "## Architectural Dependencies\n"
+        for file_path, deps in dependency_map.items():
+            if len(deps) > 1:
+                analysis += f"- **{file_path}**: Central component using {', '.join(deps)}\n"
+        
+        return analysis
+        
+    except Exception as e:
+        return f"Error analyzing dependencies: {str(e)}"
+
+async def trace_execution_flow(github_token: str, github_repository: str, entry_point: str) -> str:
+    """Trace code execution flow from a starting point."""
+    try:
+        headers = {"Authorization": f"token {github_token}", "Accept": "application/vnd.github.v3+json"}
+        
+        analysis = f"# Code Flow Analysis: {entry_point}\n\n"
+        
+        # Extract file and function/class from entry point
+        if ":" in entry_point:
+            file_path, target = entry_point.split(":", 1)
+        else:
+            file_path = entry_point
+            target = None
+        
+        # Read the entry point file
+        file_response = requests.get(f"https://api.github.com/repos/{github_repository}/contents/{file_path}", headers=headers)
+        if file_response.status_code == 200:
+            file_data = file_response.json()
+            content = base64.b64decode(file_data['content']).decode('utf-8')
+            
+            analysis += f"## Starting Point: {file_path}\n"
+            
+            # Find function calls and imports
+            lines = content.split('\n')
+            imports = [line.strip() for line in lines if line.strip().startswith(('import ', 'from '))]
+            
+            if target:
+                # Find the specific function/class
+                in_target = False
+                target_lines = []
+                for line in lines:
+                    if f"def {target}" in line or f"class {target}" in line:
+                        in_target = True
+                    elif in_target and (line.startswith('def ') or line.startswith('class ') or (line and not line.startswith(' '))):
+                        break
+                    
+                    if in_target:
+                        target_lines.append(line)
+                
+                analysis += f"### Function/Class: {target}\n"
+                analysis += f"```python\n" + "\n".join(target_lines[:10]) + "\n```\n\n"
+            
+            analysis += f"### Imports in {file_path}\n"
+            for imp in imports[:5]:
+                analysis += f"- {imp}\n"
+            
+            # Search for function calls within the target
+            if target_lines:
+                function_calls = []
+                for line in target_lines:
+                    # Simple pattern matching for function calls
+                    if "(" in line and ")" in line:
+                        # Extract potential function calls
+                        import re
+                        calls = re.findall(r'(\w+)\(', line)
+                        function_calls.extend(calls)
+                
+                if function_calls:
+                    analysis += f"\n### Function Calls in {target}\n"
+                    for call in set(function_calls)[:5]:
+                        analysis += f"- {call}()\n"
+        
+        return analysis
+        
+    except Exception as e:
+        return f"Error tracing code flow: {str(e)}"
+
+async def get_github_tools(config: RunnableConfig):
+    """Get enhanced GitHub tools for comprehensive repository analysis."""
+    try:
+        # Get repository URL from config
+        repo_url = config.get("configurable", {}).get("github_repo_url", "")
+        github_token = config.get("configurable", {}).get("github_access_token", "")
+        
+        # Extract owner/repo from URL
+        github_repository = None
+        if "github.com/" in repo_url:
+            parts = repo_url.replace("https://github.com/", "").replace("http://github.com/", "").split("/")
+            if len(parts) >= 2:
+                owner, repo = parts[0], parts[1]
+                github_repository = f"{owner}/{repo}"
+        
+        if not github_repository or not github_token:
+            logging.warning("GitHub repository or token not configured properly")
+            return []
+        
+        # Create enhanced analysis tools
+        tools = []
+        
+        # 1. Repository Structure Analyzer
+        @tool
+        async def analyze_repository_structure() -> str:
+            """Analyze the complete repository structure to understand the codebase architecture, 
+            languages, frameworks, and project organization."""
+            return await comprehensive_repo_analysis(repo_url, github_token, github_repository)
+        
+        # 2. Intelligent File Reader
+        @tool  
+        async def read_file_with_context(file_path: str) -> str:
+            """Read a specific file and provide intelligent context about its purpose and relationships.
+            
+            Args:
+                file_path: Path to the file in the repository (e.g., 'src/main.py', 'README.md')
+            """
+            return await smart_file_reader(github_token, github_repository, file_path)
+        
+        # 3. Code Pattern Search
+        @tool
+        async def search_code_patterns(query: str, file_extension: str = "") -> str:
+            """Search for specific code patterns, functions, classes, or concepts across the codebase.
+            
+            Args:
+                query: Search term (e.g., 'class User', 'def authenticate', 'import flask')
+                file_extension: Optional file extension filter (e.g., 'py', 'js', 'ipynb')
+            """
+            return await intelligent_code_search(github_token, github_repository, query, file_extension)
+        
+        # 4. Technology Stack Detector
+        @tool
+        async def detect_technology_stack() -> str:
+            """Detect and analyze the technology stack, frameworks, dependencies, and architecture patterns
+            used in the repository."""
+            return await detect_tech_stack(github_token, github_repository)
+        
+        # 5. Project Configuration Analyzer
+        @tool
+        async def analyze_project_configuration() -> str:
+            """Analyze project configuration files (requirements.txt, package.json, pyproject.toml, etc.)
+            to understand dependencies, build setup, and project structure."""
+            return await analyze_config_files(github_token, github_repository)
+        
+        # 6. Directory Explorer
+        @tool
+        async def explore_directory(directory_path: str = "") -> str:
+            """Explore a specific directory to understand its contents and organization.
+            
+            Args:
+                directory_path: Path to directory (e.g., 'src/', 'tests/', 'notebooks/') or empty for root
+            """
+            return await explore_directory_structure(github_token, github_repository, directory_path)
+        
+        # 7. Dependency Graph Analyzer
+        @tool
+        async def analyze_dependency_graph() -> str:
+            """Analyze dependencies, imports, and module relationships in the codebase to understand how components connect."""
+            return await analyze_dependencies_and_imports(github_token, github_repository)
+        
+        # 8. Code Flow Tracer
+        @tool
+        async def trace_code_flow(entry_point: str) -> str:
+            """Trace code execution flow from a starting point (e.g., API endpoint, function, or class method).
+            
+            Args:
+                entry_point: Starting point to trace (e.g., 'billing/views.py:process_payment', 'user/models.py:User')
+            """
+            return await trace_execution_flow(github_token, github_repository, entry_point)
+        
+        tools.extend([
+            analyze_repository_structure,
+            read_file_with_context,
+            search_code_patterns,
+            detect_technology_stack,
+            analyze_project_configuration,
+            explore_directory,
+            analyze_dependency_graph,
+            trace_code_flow
+        ])
+        
+        return tools
+        
+    except Exception as e:
+        logging.error(f"Error creating enhanced GitHub tools: {e}")
+        return []
+
+async def analyze_repository_structure(repo_url: str, config: RunnableConfig) -> str:
+    """Analyze the basic structure of a GitHub repository."""
+    try:
+        # Extract owner/repo from URL
+        if "github.com/" in repo_url:
+            parts = repo_url.replace("https://github.com/", "").replace("http://github.com/", "").split("/")
+            if len(parts) >= 2:
+                owner, repo = parts[0], parts[1]
+                repo_identifier = f"{owner}/{repo}"
+                
+                # Set environment variable for GitHub toolkit
+                os.environ["GITHUB_REPOSITORY"] = repo_identifier
+                
+                return f"Repository {repo_identifier} configured for analysis."
+            else:
+                return f"Invalid GitHub URL format: {repo_url}"
+        else:
+            return f"Invalid GitHub URL: {repo_url}"
+            
+    except Exception as e:
+        logging.error(f"Error analyzing repository structure: {e}")
+        return f"Error analyzing repository: {str(e)}"
+
+async def clone_repository(repo_url: str, target_dir: str = "/tmp/repo_analysis") -> str:
+    """Clone a GitHub repository for local analysis."""
+    try:
+        import subprocess
+        import shutil
+        
+        # Clean up existing directory
+        if os.path.exists(target_dir):
+            shutil.rmtree(target_dir)
+        
+        # Clone the repository
+        result = subprocess.run(
+            ["git", "clone", repo_url, target_dir],
+            capture_output=True,
+            text=True,
+            timeout=300  # 5 minute timeout
+        )
+        
+        if result.returncode == 0:
+            return f"Successfully cloned repository to {target_dir}"
+        else:
+            return f"Failed to clone repository: {result.stderr}"
+            
+    except Exception as e:
+        logging.error(f"Error cloning repository: {e}")
+        return f"Error cloning repository: {str(e)}"
+
+async def summarize_code_analysis(model: BaseChatModel, analysis_content: str) -> str:
+    """Summarize code analysis results."""
+    try:
+        summary_prompt = f"""
+        Analyze the following code/repository information and provide a concise summary:
+        
+        {analysis_content}
+        
+        Please provide:
+        1. Key architectural patterns identified
+        2. Main technologies and frameworks used
+        3. Important files and directories
+        4. Potential areas for improvement or extension
+        
+        Format as a structured summary.
+        """
+        
         summary = await asyncio.wait_for(
-            model.ainvoke([HumanMessage(content=summarize_webpage_prompt.format(webpage_content=webpage_content, date=get_today_str()))]),
+            model.ainvoke([HumanMessage(content=summary_prompt)]),
             timeout=60.0
         )
-        return f"""<summary>\n{summary.summary}\n</summary>\n\n<key_excerpts>\n{summary.key_excerpts}\n</key_excerpts>"""
+        
+        return f"<summary>\n{summary.content}\n</summary>"
+        
     except (asyncio.TimeoutError, Exception) as e:
-        print(f"Failed to summarize webpage: {str(e)}")
-        return webpage_content
+        logging.error(f"Failed to summarize code analysis: {str(e)}")
+        return analysis_content
 
 
-##########################
-# MCP Utils
-##########################
-async def get_mcp_access_token(
-    supabase_token: str,
-    base_mcp_url: str,
-) -> Optional[Dict[str, Any]]:
-    try:
-        form_data = {
-            "client_id": "mcp_default",
-            "subject_token": supabase_token,
-            "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
-            "resource": base_mcp_url.rstrip("/") + "/mcp",
-            "subject_token_type": "urn:ietf:params:oauth:token-type:access_token",
-        }
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                base_mcp_url.rstrip("/") + "/oauth/token",
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-                data=form_data,
-            ) as token_response:
-                if token_response.status == 200:
-                    token_data = await token_response.json()
-                    return token_data
-                else:
-                    response_text = await token_response.text()
-                    logging.error(f"Token exchange failed: {response_text}")
-    except Exception as e:
-        logging.error(f"Error during token exchange: {e}")
-    return None
 
-async def get_tokens(config: RunnableConfig):
-    store = get_store()
-    thread_id = config.get("configurable", {}).get("thread_id")
-    if not thread_id:
-        return None
-    user_id = config.get("metadata", {}).get("owner")
-    if not user_id:
-        return None
-    tokens = await store.aget((user_id, "tokens"), "data")
-    if not tokens:
-        return None
-    expires_in = tokens.value.get("expires_in")  # seconds until expiration
-    created_at = tokens.created_at  # datetime of token creation
-    current_time = datetime.now(timezone.utc)
-    expiration_time = created_at + timedelta(seconds=expires_in)
-    if current_time > expiration_time:
-        await store.adelete((user_id, "tokens"), "data")
-        return None
-
-    return tokens.value
-
-async def set_tokens(config: RunnableConfig, tokens: dict[str, Any]):
-    store = get_store()
-    thread_id = config.get("configurable", {}).get("thread_id")
-    if not thread_id:
-        return
-    user_id = config.get("metadata", {}).get("owner")
-    if not user_id:
-        return
-    await store.aput((user_id, "tokens"), "data", tokens)
-    return
-
-async def fetch_tokens(config: RunnableConfig) -> dict[str, Any]:
-    current_tokens = await get_tokens(config)
-    if current_tokens:
-        return current_tokens
-    supabase_token = config.get("configurable", {}).get("x-supabase-access-token")
-    if not supabase_token:
-        return None
-    mcp_config = config.get("configurable", {}).get("mcp_config")
-    if not mcp_config or not mcp_config.get("url"):
-        return None
-    mcp_tokens = await get_mcp_access_token(supabase_token, mcp_config.get("url"))
-
-    await set_tokens(config, mcp_tokens)
-    return mcp_tokens
-
-def wrap_mcp_authenticate_tool(tool: StructuredTool) -> StructuredTool:
-    old_coroutine = tool.coroutine
-    async def wrapped_mcp_coroutine(**kwargs):
-        def _find_first_mcp_error_nested(exc: BaseException) -> McpError | None:
-            if isinstance(exc, McpError):
-                return exc
-            if isinstance(exc, ExceptionGroup):
-                for sub_exc in exc.exceptions:
-                    if found := _find_first_mcp_error_nested(sub_exc):
-                        return found
-            return None
-        try:
-            return await old_coroutine(**kwargs)
-        except BaseException as e_orig:
-            mcp_error = _find_first_mcp_error_nested(e_orig)
-            if not mcp_error:
-                raise e_orig
-            error_details = mcp_error.error
-            is_interaction_required = getattr(error_details, "code", None) == -32003
-            error_data = getattr(error_details, "data", None) or {}
-            if is_interaction_required:
-                message_payload = error_data.get("message", {})
-                error_message_text = "Required interaction"
-                if isinstance(message_payload, dict):
-                    error_message_text = (
-                        message_payload.get("text") or error_message_text
-                    )
-                if url := error_data.get("url"):
-                    error_message_text = f"{error_message_text} {url}"
-                raise ToolException(error_message_text) from e_orig
-            raise e_orig
-    tool.coroutine = wrapped_mcp_coroutine
-    return tool
-
-async def load_mcp_tools(
-    config: RunnableConfig,
-    existing_tool_names: set[str],
-) -> list[BaseTool]:
-    configurable = Configuration.from_runnable_config(config)
-    if configurable.mcp_config and configurable.mcp_config.auth_required:
-        mcp_tokens = await fetch_tokens(config)
-    else:
-        mcp_tokens = None
-    if not (configurable.mcp_config and configurable.mcp_config.url and configurable.mcp_config.tools and (mcp_tokens or not configurable.mcp_config.auth_required)):
-        return []
-    tools = []
-    # TODO: When the Multi-MCP Server support is merged in OAP, update this code.
-    server_url = configurable.mcp_config.url.rstrip("/") + "/mcp"
-    mcp_server_config = {
-        "server_1":{
-            "url": server_url,
-            "headers": {"Authorization": f"Bearer {mcp_tokens['access_token']}"} if mcp_tokens else None,
-            "transport": "streamable_http"
-        }
-    }
-    try:
-        client = MultiServerMCPClient(mcp_server_config)
-        mcp_tools = await client.get_tools()
-    except Exception as e:
-        print(f"Error loading MCP tools: {e}")
-        return []
-    for tool in mcp_tools:
-        if tool.name in existing_tool_names:
-            warnings.warn(
-                f"Trying to add MCP tool with a name {tool.name} that is already in use - this tool will be ignored."
-            )
-            continue
-        if tool.name not in set(configurable.mcp_config.tools):
-            continue
-        tools.append(wrap_mcp_authenticate_tool(tool))
-    return tools
 
 
 ##########################
 # Tool Utils
 ##########################
-async def get_search_tool(search_api: SearchAPI):
-    if search_api == SearchAPI.ANTHROPIC:
-        return [{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}]
-    elif search_api == SearchAPI.OPENAI:
-        return [{"type": "web_search_preview"}]
-    elif search_api == SearchAPI.TAVILY:
-        search_tool = tavily_search
-        search_tool.metadata = {**(search_tool.metadata or {}), "type": "search", "name": "web_search"}
-        return [search_tool]
-    elif search_api == SearchAPI.NONE:
-        return []
-    
 async def get_all_tools(config: RunnableConfig):
-    tools = [tool(ResearchComplete)]
-    configurable = Configuration.from_runnable_config(config)
-    search_api = SearchAPI(get_config_value(configurable.search_api))
-    tools.extend(await get_search_tool(search_api))
-    existing_tool_names = {tool.name if hasattr(tool, "name") else tool.get("name", "web_search") for tool in tools}
-    mcp_tools = await load_mcp_tools(config, existing_tool_names)
-    tools.extend(mcp_tools)
+    # Create the AnalysisComplete tool
+    analysis_complete_tool = StructuredTool.from_function(
+        func=lambda: "Analysis completed",
+        name="AnalysisComplete",
+        description="Call this tool to indicate that the repository analysis is complete.",
+        args_schema=AnalysisComplete
+    )
+    tools = [analysis_complete_tool]
+    
+    # Add GitHub analysis tools
+    github_tools = await get_github_tools(config)
+    tools.extend(github_tools)
+    
     return tools
 
 def get_notes_from_tool_calls(messages: list[MessageLikeRepresentation]):
     return [tool_msg.content for tool_msg in filter_messages(messages, include_types="tool")]
 
-
-##########################
-# Model Provider Native Websearch Utils
-##########################
-def anthropic_websearch_called(response):
-    try:
-        usage = response.response_metadata.get("usage")
-        if not usage:
-            return False
-        server_tool_use = usage.get("server_tool_use")
-        if not server_tool_use:
-            return False
-        web_search_requests = server_tool_use.get("web_search_requests")
-        if web_search_requests is None:
-            return False
-        return web_search_requests > 0
-    except (AttributeError, TypeError):
-        return False
-
-def openai_websearch_called(response):
-    tool_outputs = response.additional_kwargs.get("tool_outputs")
-    if tool_outputs:
-        for tool_output in tool_outputs:
-            if tool_output.get("type") == "web_search_call":
-                return True
-    return False
+def get_today_str() -> str:
+    """Get today's date as a string."""
+    return datetime.now().strftime("%Y-%m-%d")
 
 
 ##########################
-# Token Limit Exceeded Utils
+# Token Limit Exceeded Utils (keeping existing)
 ##########################
 def is_token_limit_exceeded(exception: Exception, model_name: str = None) -> bool:
     error_str = str(exception).lower()
@@ -483,12 +848,12 @@ def get_api_key_for_model(model_name: str, config: RunnableConfig):
             return os.getenv("GOOGLE_API_KEY")
         return None
 
-def get_tavily_api_key(config: RunnableConfig):
+def get_github_token(config: RunnableConfig):
     should_get_from_config = os.getenv("GET_API_KEYS_FROM_CONFIG", "false")
     if should_get_from_config.lower() == "true":
         api_keys = config.get("configurable", {}).get("apiKeys", {})
         if not api_keys:
             return None
-        return api_keys.get("TAVILY_API_KEY")
+        return api_keys.get("GITHUB_TOKEN")
     else:
-        return os.getenv("TAVILY_API_KEY")
+        return os.getenv("GITHUB_TOKEN")

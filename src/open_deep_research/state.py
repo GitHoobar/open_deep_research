@@ -8,14 +8,14 @@ from typing_extensions import TypedDict
 ###################
 # Structured Outputs
 ###################
-class ConductResearch(BaseModel):
-    """Call this tool to conduct research on a specific topic."""
-    research_topic: str = Field(
-        description="The topic to research. Should be a single topic, and should be described in high detail (at least a paragraph).",
+class AnalyzeRepository(BaseModel):
+    """Call this tool to analyze a specific aspect of the repository."""
+    analysis_topic: str = Field(
+        description="The specific aspect of the repository to analyze. Should be a single topic, and should be described in high detail (at least a paragraph).",
     )
 
-class ResearchComplete(BaseModel):
-    """Call this tool to indicate that the research is complete."""
+class AnalysisComplete(BaseModel):
+    """Call this tool to indicate that the repository analysis is complete."""
 
 class Summary(BaseModel):
     summary: str
@@ -26,15 +26,18 @@ class ClarifyWithUser(BaseModel):
         description="Whether the user needs to be asked a clarifying question.",
     )
     question: str = Field(
-        description="A question to ask the user to clarify the report scope",
+        description="A question to ask the user to clarify the design doc scope",
     )
     verification: str = Field(
-        description="Verify message that we will start research after the user has provided the necessary information.",
+        description="Verify message that we will start analysis after the user has provided the necessary information.",
     )
 
-class ResearchQuestion(BaseModel):
-    research_brief: str = Field(
-        description="A research question that will be used to guide the research.",
+class DesignDocQuery(BaseModel):
+    repo_url: str = Field(
+        description="The GitHub repository URL to analyze.",
+    )
+    design_brief: str = Field(
+        description="A brief description of what design document should be created based on the repository analysis.",
     )
 
 
@@ -53,25 +56,27 @@ class AgentInputState(MessagesState):
 
 class AgentState(MessagesState):
     supervisor_messages: Annotated[list[MessageLikeRepresentation], override_reducer]
-    research_brief: Optional[str]
-    raw_notes: Annotated[list[str], override_reducer] = []
-    notes: Annotated[list[str], override_reducer] = []
-    final_report: str
+    repo_url: Optional[str]
+    design_brief: Optional[str]
+    raw_analysis: Annotated[list[str], override_reducer] = []
+    analysis_notes: Annotated[list[str], override_reducer] = []
+    final_design_doc: str
 
 class SupervisorState(TypedDict):
     supervisor_messages: Annotated[list[MessageLikeRepresentation], override_reducer]
-    research_brief: str
-    notes: Annotated[list[str], override_reducer] = []
-    research_iterations: int = 0
-    raw_notes: Annotated[list[str], override_reducer] = []
+    repo_url: str
+    design_brief: str
+    analysis_notes: Annotated[list[str], override_reducer] = []
+    analysis_iterations: int = 0
+    raw_analysis: Annotated[list[str], override_reducer] = []
 
-class ResearcherState(TypedDict):
-    researcher_messages: Annotated[list[MessageLikeRepresentation], operator.add]
+class AnalyzerState(TypedDict):
+    analyzer_messages: Annotated[list[MessageLikeRepresentation], operator.add]
     tool_call_iterations: int = 0
-    research_topic: str
-    compressed_research: str
-    raw_notes: Annotated[list[str], override_reducer] = []
+    analysis_topic: str
+    compressed_analysis: str
+    raw_analysis: Annotated[list[str], override_reducer] = []
 
-class ResearcherOutputState(BaseModel):
-    compressed_research: str
-    raw_notes: Annotated[list[str], override_reducer] = []
+class AnalyzerOutputState(BaseModel):
+    compressed_analysis: str
+    raw_analysis: Annotated[list[str], override_reducer] = []
