@@ -50,11 +50,11 @@ async def generate_pricing_model_design():
     config = {
         "configurable": {
             "allow_clarification": False,
-            "max_concurrent_analysis_units": 8,  # Enhanced parallel analysis
-            "max_analysis_iterations": 10,  # Deep analysis for complex pricing system
+            "max_concurrent_analysis_units": 1,  # Enhanced parallel analysis
+            "max_analysis_iterations": 1,  # Deep analysis for complex pricing system
             "github_repo_url": "https://github.com/Entelligence-AI/backend",
             "github_access_token": github_token,
-            "model": "gpt-4o",  # Best model for complex business logic
+            "model": "gpt-4.1-mini",  # Best model for complex business logic
             "temperature": 0.1,  # Focused, precise responses
         }
     }
